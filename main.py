@@ -163,4 +163,24 @@ async def get_validators():
         "pchain_count": len(pchain_validators),
         "matched": sum(1 for r in result if r["hasPchainData"]),
         "validators": result
-        }
+    }
+
+
+@app.get("/debug2")
+async def debug2():
+    """Show raw P-chain data for first validator"""
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "platform.getCurrentValidators", "params": {}}
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(P_CHAIN_ENDPOINTS[0], json=payload, headers={"Content-Type": "application/json"})
+        data = r.json()
+        validators = data.get("result", {}).get("validators", [])
+        if validators:
+            # Return first validator's raw keys and values
+            v = validators[0]
+            return {
+                "keys": list(v.keys()),
+                "sample": {k: str(v[k])[:50] for k in v.keys() if k != "delegators"},
+                "delegator_count": len(v.get("delegators") or []),
+                "delegator_sample": (v.get("delegators") or [{}])[0] if v.get("delegators") else {}
+            }
+    return {"error": "no data"}
