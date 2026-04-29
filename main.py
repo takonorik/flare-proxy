@@ -122,22 +122,20 @@ async def get_validators():
         pdata = pchain_map.get(short_id, {})
         has_data = bool(pdata)
 
-        # P-chain uses "weight" not "stakeAmount"
-        stake_nflr = int(pdata.get("weight", 0))
-        stake_flr = stake_nflr / 1e9
-
-        # delegatorWeight = total delegated amount
-        delegated_nflr = int(pdata.get("delegatorWeight", 0))
-        delegated_flr = delegated_nflr / 1e9
+        # P-chain units: weight in microFLR (÷1e6), delegatorWeight in nFLR (÷1e9)
+        # Max delegation = 5x selfBond (Flare-specific rule)
+        stake_flr = int(pdata.get("weight", 0)) / 1e6
+        delegated_flr = int(pdata.get("delegatorWeight", 0)) / 1e9
         delegator_count = int(pdata.get("delegatorCount", 0))
 
         fee_pct = round(float(pdata.get("delegationFee", "0") or "0"), 2)
-        uptime = round(float(pdata.get("uptime", "0") or "0") * 100, 2)
+        # uptime is already in % format (e.g. "99.9933"), no need to multiply
+        uptime = round(float(pdata.get("uptime", "0") or "0"), 2)
         end_time = int(pdata.get("endTime", 0))
         days_left = max(0, round((end_time - now) / 86400))
 
-        # Free space = selfBond * 15 - delegated
-        capacity_flr = stake_flr * 15
+        # Free space = selfBond * 5 - delegated (Flare max delegation = 5x)
+        capacity_flr = stake_flr * 5
         free_flr = max(0, capacity_flr - delegated_flr)
 
         result.append({
