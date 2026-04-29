@@ -122,13 +122,14 @@ async def get_validators():
         pdata = pchain_map.get(short_id, {})
         has_data = bool(pdata)
 
-        stake_nflr = int(pdata.get("stakeAmount", 0))
+        # P-chain uses "weight" not "stakeAmount"
+        stake_nflr = int(pdata.get("weight", 0))
         stake_flr = stake_nflr / 1e9
 
-        delegators = pdata.get("delegators") or []
-        delegated_nflr = sum(int(d.get("stakeAmount", 0)) for d in delegators)
+        # delegatorWeight = total delegated amount
+        delegated_nflr = int(pdata.get("delegatorWeight", 0))
         delegated_flr = delegated_nflr / 1e9
-        delegator_count = len(delegators)
+        delegator_count = int(pdata.get("delegatorCount", 0))
 
         fee_pct = round(float(pdata.get("delegationFee", "0") or "0"), 2)
         uptime = round(float(pdata.get("uptime", "0") or "0") * 100, 2)
