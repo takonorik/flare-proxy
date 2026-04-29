@@ -21,7 +21,7 @@ P_CHAIN_ENDPOINTS = [
 
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "4.0", "source": "flare.builders + p-chain"}
+    return {"status": "ok", "version": "5.0", "source": "flare.builders + p-chain"}
 
 @app.get("/healthz")
 def health():
@@ -37,8 +37,9 @@ async def fetch_node_ids(client: httpx.AsyncClient):
     }
     r = await client.get(url, headers=headers)
     html = r.text
+    # Returns full IDs without NodeID- prefix
     node_ids = re.findall(r'NodeID-([A-Za-z0-9]+)', html)
-    return list(dict.fromkeys(node_ids))  # dedupe
+    return list(dict.fromkeys(node_ids))
 
 async def fetch_pchain_validators(client: httpx.AsyncClient):
     """Fetch validator data from Flare P-chain API"""
@@ -56,11 +57,49 @@ async def fetch_pchain_validators(client: httpx.AsyncClient):
             continue
     return []
 
+@app.get("/debug")
+async def debug():
+    """Debug: test P-chain API connectivity and matching"""
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        node_ids_task = fetch_node_ids(client)
+        pchain_task = fetch_pchain_validators(client)
+        node_ids, pchain = await asyncio.gather(node_ids_task, pchain_task, return_exceptions=True)
+
+    if isinstance(node_ids, Exception):
+        node_ids = []
+    if isinstance(pchain, Exception):
+        pchain = []
+
+    # Build pchain map
+    pchain_map = {}
+    for v in pchain:
+        nid = v.get("nodeID", "").replace("NodeID-", "")
+        pchain_map[nid] = v
+
+    # Check matches
+    matched = []
+    unmatched = []
+    for nid in node_ids:
+        if nid in pchain_map:
+            matched.append(nid[:12])
+        else:
+            unmatched.append(nid[:12])
+
+    return {
+        "flare_builders_count": len(node_ids),
+        "pchain_count": len(pchain),
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
+        "matched_samples": matched[:5],
+        "unmatched_samples": unmatched[:5],
+        "pchain_sample": list(pchain_map.keys())[0][:12] if pchain_map else "none",
+        "builders_sample": node_ids[0][:12] if node_ids else "none",
+    }
+
 @app.get("/validators")
 async def get_validators():
     now = int(time.time())
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        # Fetch both in parallel
         node_ids_task = fetch_node_ids(client)
         pchain_task = fetch_pchain_validators(client)
         node_ids, pchain_validators = await asyncio.gather(
@@ -72,17 +111,17 @@ async def get_validators():
     if isinstance(pchain_validators, Exception):
         pchain_validators = []
 
-    # Build lookup: nodeId suffix → pchain data
+    # Build lookup: full nodeId (without NodeID-) → pchain data
     pchain_map = {}
     for v in pchain_validators:
-        nid = v.get("nodeID", "")  # e.g. "NodeID-AbcXyz..."
-        short = nid.replace("NodeID-", "")
-        pchain_map[short] = v
+        nid = v.get("nodeID", "").replace("NodeID-", "")
+        pchain_map[nid] = v
 
-    # Combine: for each node_id from flare.builders, enrich with pchain data
     result = []
     for short_id in node_ids:
         pdata = pchain_map.get(short_id, {})
+        has_data = bool(pdata)
+
         stake_nflr = int(pdata.get("stakeAmount", 0))
         stake_flr = stake_nflr / 1e9
 
@@ -91,18 +130,12 @@ async def get_validators():
         delegated_flr = delegated_nflr / 1e9
         delegator_count = len(delegators)
 
-        # Fee: delegationFee comes as percentage string e.g. "9.0000"
-        fee_raw = float(pdata.get("delegationFee", "0") or "0")
-        # Render API returns fee as actual percent (e.g. 9.0 = 9%)
-        fee_pct = round(fee_raw, 2)
-
+        fee_pct = round(float(pdata.get("delegationFee", "0") or "0"), 2)
         uptime = round(float(pdata.get("uptime", "0") or "0") * 100, 2)
-
         end_time = int(pdata.get("endTime", 0))
         days_left = max(0, round((end_time - now) / 86400))
 
-        # Free space: capacity = selfBond * 15 - delegated
-        # selfBond = stakeAmount (validator's own stake)
+        # Free space = selfBond * 15 - delegated
         capacity_flr = stake_flr * 15
         free_flr = max(0, capacity_flr - delegated_flr)
 
@@ -117,35 +150,17 @@ async def get_validators():
             "uptime": uptime,
             "endTime": end_time,
             "daysLeft": days_left,
-            "hasPchainData": bool(pdata),
+            "hasPchainData": has_data,
         })
 
-    # Sort by freeFlr desc
     result.sort(key=lambda x: x["freeFlr"], reverse=True)
 
     return {
         "source": "flare.builders + p-chain",
-        "version": "4.0",
+        "version": "5.0",
         "fetchedAt": now,
         "count": len(result),
         "pchain_count": len(pchain_validators),
+        "matched": sum(1 for r in result if r["hasPchainData"]),
         "validators": result
-    }
-
-
-@app.get("/debug")
-async def debug():
-    """Debug: test P-chain API connectivity"""
-    payload = {"jsonrpc": "2.0", "id": 1, "method": "platform.getCurrentValidators", "params": {}}
-    results = {}
-    async with httpx.AsyncClient(timeout=15) as client:
-        for ep in P_CHAIN_ENDPOINTS:
-            try:
-                r = await client.post(ep, json=payload, headers={"Content-Type": "application/json"})
-                data = r.json()
-                validators = data.get("result", {}).get("validators", [])
-                results[ep] = {"status": r.status_code, "count": len(validators),
-                               "sample": validators[0].get("nodeID","") if validators else "none"}
-            except Exception as e:
-                results[ep] = {"error": str(e)}
-    return results
+        }
