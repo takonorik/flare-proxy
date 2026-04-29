@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-import json
+import re
 import time
 
 app = FastAPI()
@@ -13,14 +13,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-P_CHAIN_ENDPOINTS = [
-    "https://flare-api.flare.network/ext/bc/P",
-    "https://flare.flare.network/ext/bc/P",
-]
-
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "2.0"}
+    return {"status": "ok", "version": "3.0", "source": "flare.builders"}
 
 @app.get("/healthz")
 def health():
@@ -28,76 +23,46 @@ def health():
 
 @app.get("/validators")
 async def get_validators():
-    """Fetch live validator data from Flare P-chain API"""
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "platform.getCurrentValidators",
-        "params": {}
+    """Fetch live validator data from flare.builders (SSR page)"""
+    url = "https://flare.builders/validators"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
     }
-    headers = {"Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        r = await client.get(url, headers=headers)
+        html = r.text
+
+    # Extract NodeIDs from the SSR HTML
+    # Pattern: NodeID-XXXX appears in the rendered HTML
+    node_ids = re.findall(r'NodeID-([A-Za-z0-9]+)', html)
+    node_ids = list(dict.fromkeys(node_ids))  # dedupe preserving order
+
+    # Also try to extract structured data from JSON-LD or __NEXT_DATA__
+    next_data = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
     
-    last_error = None
-    async with httpx.AsyncClient(timeout=20) as client:
-        for endpoint in P_CHAIN_ENDPOINTS:
-            try:
-                r = await client.post(endpoint, json=payload, headers=headers)
-                if r.status_code == 200:
-                    data = r.json()
-                    validators = data.get("result", {}).get("validators", [])
-                    if validators:
-                        now = int(time.time())
-                        result = []
-                        for v in validators:
-                            node_id = v.get("nodeID", "")
-                            end_time = int(v.get("endTime", 0))
-                            start_time = int(v.get("startTime", 0))
-                            stake_nflr = int(v.get("stakeAmount", 0))
-                            stake_flr = stake_nflr / 1e9
-                            
-                            # Delegators
-                            delegators = v.get("delegators") or []
-                            delegated_nflr = sum(int(d.get("stakeAmount", 0)) for d in delegators)
-                            delegated_flr = delegated_nflr / 1e9
-                            delegator_count = len(delegators)
-                            
-                            # Fee (delegationFee is in units of 10000ths of a percent)
-                            fee_raw = float(v.get("delegationFee", "0"))
-                            fee_pct = fee_raw / 10000 if fee_raw > 100 else fee_raw
-                            
-                            # Uptime (0-1)
-                            uptime = float(v.get("uptime", "0"))
-                            
-                            # Days remaining
-                            days_left = max(0, round((end_time - now) / 86400))
-                            
-                            # Free space: capacity = stake * 15, free = capacity - delegated
-                            capacity_flr = stake_flr * 15
-                            free_flr = max(0, capacity_flr - delegated_flr)
-                            
-                            result.append({
-                                "nodeId": node_id,
-                                "stakeFlr": round(stake_flr, 2),
-                                "delegatedFlr": round(delegated_flr, 2),
-                                "freeFlr": round(free_flr, 2),
-                                "capacityFlr": round(capacity_flr, 2),
-                                "delegatorCount": delegator_count,
-                                "feePct": round(fee_pct, 2),
-                                "uptime": round(uptime * 100, 2),
-                                "endTime": end_time,
-                                "daysLeft": days_left,
-                                "startTime": start_time,
-                            })
-                        
-                        return {
-                            "source": "p-chain",
-                            "endpoint": endpoint,
-                            "count": len(result),
-                            "fetchedAt": now,
-                            "validators": result
-                        }
-            except Exception as e:
-                last_error = str(e)
-                continue
-    
-    return {"error": f"All endpoints failed: {last_error}", "validators": []}
+    result = {
+        "source": "flare.builders",
+        "fetchedAt": int(time.time()),
+        "html_length": len(html),
+        "node_ids": node_ids,
+        "node_count": len(node_ids),
+        "has_next_data": next_data is not None,
+    }
+
+    if next_data:
+        import json
+        try:
+            data = json.loads(next_data.group(1))
+            result["next_data_keys"] = list(data.get("props", {}).get("pageProps", {}).keys())
+            # Try to get validator data
+            page_props = data.get("props", {}).get("pageProps", {})
+            validators = page_props.get("validators", page_props.get("data", None))
+            if validators:
+                result["validators"] = validators
+        except Exception as e:
+            result["next_data_error"] = str(e)
+
+    return result
