@@ -131,3 +131,21 @@ async def get_validators():
         "pchain_count": len(pchain_validators),
         "validators": result
     }
+
+
+@app.get("/debug")
+async def debug():
+    """Debug: test P-chain API connectivity"""
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "platform.getCurrentValidators", "params": {}}
+    results = {}
+    async with httpx.AsyncClient(timeout=15) as client:
+        for ep in P_CHAIN_ENDPOINTS:
+            try:
+                r = await client.post(ep, json=payload, headers={"Content-Type": "application/json"})
+                data = r.json()
+                validators = data.get("result", {}).get("validators", [])
+                results[ep] = {"status": r.status_code, "count": len(validators),
+                               "sample": validators[0].get("nodeID","") if validators else "none"}
+            except Exception as e:
+                results[ep] = {"error": str(e)}
+    return results
