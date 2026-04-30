@@ -183,3 +183,38 @@ async def debug2():
                 "delegator_sample": (v.get("delegators") or [{}])[0] if v.get("delegators") else {}
             }
     return {"error": "no data"}
+
+
+@app.get("/debug3")
+async def debug3(nodeId: str = "w4tjm1YTWgnw"):
+    """Show raw P-chain data for a specific node by prefix"""
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "platform.getCurrentValidators", "params": {}}
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(P_CHAIN_ENDPOINTS[0], json=payload, headers={"Content-Type": "application/json"})
+        data = r.json()
+        validators = data.get("result", {}).get("validators", [])
+        
+    for v in validators:
+        nid = v.get("nodeID", "").replace("NodeID-", "")
+        if nid.startswith(nodeId[:12]):
+            w = int(v.get("weight", 0))
+            dw = int(v.get("delegatorWeight", 0))
+            return {
+                "nodeID": v.get("nodeID"),
+                "weight_raw": w,
+                "delegatorWeight_raw": dw,
+                "weight_div1e6": w / 1e6,
+                "weight_div1e9": w / 1e9,
+                "dw_div1e6": dw / 1e6,
+                "dw_div1e9": dw / 1e9,
+                "dw_div1e12": dw / 1e12,
+                "free_formula1": max(0, w/1e6*5 - dw/1e9),
+                "free_formula2": max(0, w/1e9*5 - dw/1e9),
+                "free_formula3": max(0, (w*5 - dw) / 1e9),
+                "free_formula4": max(0, (w*5 - dw) / 1e6),
+                "delegationFee": v.get("delegationFee"),
+                "uptime": v.get("uptime"),
+                "delegatorCount": v.get("delegatorCount"),
+                "endTime": v.get("endTime"),
+            }
+    return {"error": f"nodeId {nodeId} not found"}
