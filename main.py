@@ -122,21 +122,23 @@ async def get_validators():
         pdata = pchain_map.get(short_id, {})
         has_data = bool(pdata)
 
-        # P-chain units: weight in microFLR (÷1e6), delegatorWeight in nFLR (÷1e9)
-        # Max delegation = 5x selfBond (Flare-specific rule)
-        stake_flr = int(pdata.get("weight", 0)) / 1e6
-        delegated_flr = int(pdata.get("delegatorWeight", 0)) / 1e9
+        # P-chain units (verified via debug3):
+        # weight / 1e12 = total node capacity in FLR
+        # delegatorWeight / 1e12 = total delegated in FLR
+        # free = (weight - delegatorWeight) / 1e12
+        w = int(pdata.get("weight", 0))
+        dw = int(pdata.get("delegatorWeight", 0))
+        capacity_flr = w / 1e12
+        delegated_flr = dw / 1e12
+        free_flr = max(0, capacity_flr - delegated_flr)
+        stake_flr = capacity_flr  # capacity = total node weight
         delegator_count = int(pdata.get("delegatorCount", 0))
 
         fee_pct = round(float(pdata.get("delegationFee", "0") or "0"), 2)
-        # uptime is already in % format (e.g. "99.9933"), no need to multiply
+        # uptime is already in % format (e.g. "99.9933")
         uptime = round(float(pdata.get("uptime", "0") or "0"), 2)
         end_time = int(pdata.get("endTime", 0))
         days_left = max(0, round((end_time - now) / 86400))
-
-        # Free space = selfBond * 5 - delegated (Flare max delegation = 5x)
-        capacity_flr = stake_flr * 5
-        free_flr = max(0, capacity_flr - delegated_flr)
 
         result.append({
             "nodeId": short_id,
